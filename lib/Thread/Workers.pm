@@ -15,7 +15,7 @@ use Thread::Semaphore;
 use Encode;
 
 our $VERSION;
-$VERSION = '0.1';
+$VERSION = '0.02';
 
 sub new {
     my $class = shift;
@@ -46,12 +46,16 @@ sub _initialize() {
     $self->{_boss_lock} = Thread::Semaphore->new(1);
     $self->{_boss_cmd} = 0;
     $self->{_worker_lock} = Thread::Semaphore->new($self->{params}{threadcount});
-
+    $self->{_worker_log_lock} = Thread::Semaphore->new(1);
+    $self->{_worker_log} = undef;
+    
     share($self->{_boss_lock});
     share($self->{_boss_tid});
     share($self->{_boss_cmd});
     share($self->{_worker_lock});
-
+    share(@{$self->{_worker_log}});
+    share($self->{_worker_log_lock});
+    
     for my $thr (1..$self->{params}{threadcount}) {
 	$self->{_worker_tid}{$thr} = 0;
 	$self->{_worker_cmd}{$thr} = 0;
@@ -96,7 +100,21 @@ sub _start_boss {
                                 	    $self->{_queue}->enqueue($work);
                                 	}
                             	    };
-                                    sleep($self->{params}{bossinterval});
+                            	    $self->{_worker_log_lock}->down();
+                            	    if ($#{$self->{_work_log}}) {
+                            	    
+                            		if (exists($self->{boss}{logcb})) {
+                            		    $self->{boss}{logcb}->($self->{_work_log});
+                            		} 
+                            		#erase worker results
+                            		$self->{_work_log} = undef; 
+                            	    }
+                            	    $self->{_worker_log_lock}->up();
+                            	    if ($self->{_boss_cmd}) {
+                            		 do {
+                                	    sleep($self->{params}{bossinterval});
+                            		} until ($self->{_boss_cmd} <= 1);
+                            	    }
                                 };
         });
         $self->{_boss_tid} = $self->{_boss}->tid;
@@ -106,13 +124,20 @@ sub _start_boss {
     }
 }
 
-sub set_boss_cb {
+sub set_boss_fetch_cb {
     my $self = shift;
     my $callback = shift;
     $self->{boss}{cb} = $callback;
 }
 
-sub set_worker_cb {
+sub set_boss_work_log_cb {
+    my $self = shift;
+    my $callback = shift;
+    $self->{boss}{logcb} = $callback;
+
+}
+
+sub set_worker_work_cb {
     my $self = shift;
     my $callback = shift;
     $self->{_worker_cb} = $callback;
@@ -123,6 +148,8 @@ sub add_worker {
     my $self = shift;
     $self->{params}{threadcount}++;
     $self->{_worker_lock}->up();
+    share($self->{_worker_tid}{$self->{params}{threadcount}});
+    share($self->{_worker_cmd}{$self->{params}{threadcount}});
     $self->_workers_begin(1);
     return 1;
 }
@@ -162,16 +189,23 @@ sub stop_worker {
 	$self->{_worker}{$worker}->join();
 	$self->{_worker_tid}{$worker} = 0;
 	$self->{_worker_lock}->up();
+	return 1;
     }
 }
 
 sub _workers_begin {
     my $self = shift;
-    my $single = shift || 0;
+    my $single = shift;
+
     my $start_thread = (keys %{$self->{_worker}});
-    if (!defined($start_thread) or $start_thread == 0) { $start_thread = 1 };
+    # this bit of ugliness is in case we're just starting a single worker so we get its thr num right.
+
+    if (!defined($start_thread)) { $start_thread = 0 };
+    if (defined($single)) {
+	$start_thread++;
+    }
     #setup signal watchers, check, sleep for interval - time i took to run
-    for my $thr ($start_thread+$single..$self->{params}{threadcount}) {
+    for my $thr (1+$start_thread..$self->{params}{threadcount}) {
 	$self->{_worker}{$thr} = threads->create(sub {
 				my $work; 
 				$self->{_worker_lock}->down();    #
@@ -180,10 +214,18 @@ sub _workers_begin {
                             	    $work = $self->{_queue}->dequeue_nb();
                                     # Do work on $item
                                     if ($work) { 
-                                	$self->{_worker_cb}->($work);
+                                	my $results = $self->{_worker_cb}->($work);
+                                	if (defined($results)) {
+                                	    $self->{_worker_log_lock}->down();
+                                	    push @{$self->{_worker_log}}, $work => $results;
+                                	    $self->{_worker_log_lock}->up();
+                                	}
                             	    }
-                                    elsif ($self->{_worker_cmd}{$thr}) { # we're in RUN state
-                                	sleep($self->{params}{threadinterval});
+                                    if ($self->{_worker_cmd}{$thr}) { # we're still in RUN state
+                                	do {
+                                	    sleep($self->{params}{threadinterval});
+                                	} until ($self->{_worker_cmd}{$thr} <= 1);
+
                             	    } 
                             	    else {			# got a DIE signal
                             		last;
@@ -207,6 +249,26 @@ sub stop_boss {
     else {
 	warn("Boss already stopped");
     }
+}
+
+sub sleep_workers {
+    my $self = shift;
+    for my $thr (1..$self->{params}{threadcount}+1) {
+	if ($self->{_worker_cmd} > 0) {
+	    $self->{_worker_cmd}{$thr} = 2;
+	}
+    }
+    return 1;
+}
+
+sub wake_workers {
+    my $self = shift;
+    for my $thr (1..$self->{params}{threadcount}) {
+	if ($self->{_worker_cmd} > 1) {
+	    $self->{_worker_cmd}{$thr} = 1;
+	}
+    }
+    return 1;
 }
 
 sub stop_finish_work {
@@ -248,10 +310,9 @@ sub KILL {
 
 =head1 NAME
 
-Thread::Workers - v0.1 - Perl extension for creating a "boss" which feeds a work queue 
-which is serviced by a pool of threads called "workers". This module aims to be lightweight with
-limited features. Its primary aim is to provide simple Boss/Worker thread management while keeping
-dependencies low.
+Thread::Workers - Creates a "boss" which feeds a queue, which is serviced by a pool of threads called 
+"workers". This module aims to be lightweight with limited features. Its primary aim is to provide 
+simple Boss/Worker thread management while keeping dependencies low.
 
 This is currently in experimental and development state and will be solidified more over time, but it
 works as advertised now.
@@ -261,19 +322,20 @@ works as advertised now.
   use Thread::Workers;
   
   my $pool = Thread::Workers->new();
-  $pool->set_boss_cb(\&function_returns_work);
-  $pool->set_worker_cb(\&function_does_work);
+  $pool->set_boss_fetch_cb(\&function_returns_work);
+  $pool->set_boss_log_cb(\&function_processes_worker_returns);
+  $pool->set_worker_work_cb(\&function_does_work);
   $pool->start_boss();
   $pool->start_workers();
-  
+
   #internal control loops
   # we have orders to increase the load! add 500 workers
   for (1..500) { 
     $pool->add_worker();
   }
-  
+
   #time to cleanup
-  
+
   $pool->stop_boss(); #signal boss thread to die
   $pool->stop_workers(); #stop the workers, may leave unfinished items in queue.
   # Or! 
@@ -312,15 +374,21 @@ can be accessed via $pool->{_queue}. Future revisions may include a callback for
 =head1 SEE ALSO
 
 threads
+
 Thread::Queue
+
 Thread::Sempahore
 
 If this doesn't suit your needs, see the following projects:
 
 Thread::Pool - very similar in goals to this project with a larger feature set.
+
 Gearman - client/server worker pool
+
 TheSchwartz (or Helios) - DBI fed backend to pools of workers
+
 Beanstalk - client/server worker pool
+
 Hopkins - "a better cronjob" with work queues
 
 

@@ -1,5 +1,5 @@
 {
-   "abstract" : "v0.1 - Perl extension for creating a \"boss\" which feeds a work queue ",
+   "abstract" : "Creates a \"boss\" which feeds a queue, which is serviced by a pool of threads called ",
    "author" : [
       "Kal Aeolian <kalielaeolian@gmail.com>"
    ],
@@ -35,5 +35,5 @@
       }
    },
    "release_status" : "stable",
-   "version" : "0.1"
+   "version" : "0.02"
 }
