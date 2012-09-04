@@ -9,7 +9,7 @@ use strict;
 use warnings;
 
 
-use Test::Simple tests =>10;
+use Test::Simple tests =>12;
 
 use lib '/home/kal/code/Thread-Workers/lib';
 
@@ -26,9 +26,12 @@ ok ($pool->set_boss_fetch_cb(\&boss_cb));
 ok ($pool->set_worker_work_cb(\&worker_cb));
 ok ($pool->start_boss());
 ok ($pool->start_workers());
+ok ($pool->add_worker());
 ok ($pool->sleep_workers());
 ok ($pool->wake_workers());
 ok ($pool->stop_boss());
-ok ($pool->stop_workers());
+sleep(1);
+ok ($pool->start_boss());
+ok ($pool->stop_finish_work());
 #########################
 
