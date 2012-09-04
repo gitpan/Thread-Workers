@@ -14,7 +14,7 @@ use Thread::Semaphore;
 use Encode;
 
 our $VERSION;
-$VERSION = '0.03';
+$VERSION = '0.04';
 
 sub new {
     my $class = shift;
@@ -370,6 +370,43 @@ workers which are serviced with work by a boss thread. The boss thread could be 
 a socket listening on the master thread, or could have a routine to check a database
 for work.
 
+=head1 EXAMPLE
+
+sub fetch_data {
+
+    my $work = get_data_from_a_data_sourc();
+    # if you have an array of items and wish it to be processed you can do
+    # my %hash = map { (0..$#{$work}) => $_ } @{$work}; # or something
+    # the hask keys represent a 'priority' so to speak.
+    # an array or a scalar being put into the work queue are passed directly
+    # to a worker to be processed. if you have a single hash item you wish to pass,
+    # do something like return [ %hash ]
+    return $work;
+}
+
+sub work_data {
+    my $work = shift;
+    # process the work.
+    # we can log a return by returning a value.
+    return do_something_with($work);
+}
+
+sub work_log {
+    my $log = shift; # this is an array of hashes. each array item is { workitem => $original_work_item, return => $return_from_worker };
+    do_something_with_the_log($log);
+}
+
+my $workers = Thread::Workers->new(threadinterval => 5, bossinterval => 5, totalthreads => 15);
+$workers->set_boss_log_cb->(\&work_log);
+$workers->set_boss_fetch_cb->(\&fetch_data);
+$workers->set_workers_work_cb->(\&work_data);
+$workers->start_boss();
+$workers->start_workers();
+
+# would probably do other things in your code to spin in loops.
+# In my own code, I'm doing system monitoring and injecting some jobs locally, handling logging of the boss/worker subs,
+# and other tasks.
+
 The boss thread will do the following actions when it receives work:
 
 For scalars or arrays, it will post it as a single item into the work queue. Your workers
@@ -380,8 +417,9 @@ integers correspond to the order they are placed into the queue.
 { 
     0 => 'step 0',
     1 => 'step 1',
-    2 => { cmd1 => 'some data }
+    2 => cmd1 => 'some data
 }
+
 
 This will create 3 separate "work items" to be placed into the queue. If you need to feed your workers
 with a single block of data from a hash, you *must* assign it this way.
@@ -389,6 +427,16 @@ with a single block of data from a hash, you *must* assign it this way.
 {
     0 => { cmd1 => 'data', cmd2 => 'data' }
 }
+
+If the client returns data, say for 'step 0' it returned a value, it will be given to the log queue
+as an array of hashes. Lets say the worker logged { timestamp => '201209030823', jobid => '121', return = 'success' }
+
+The log queue will have 
+[ 
+    { job => 'step 0', return => {timestamp => '201209030823', jobid => '121', return = 'success' } },
+]
+
+Whether you set a log callback or not, the log is flushed at the end of every boss interval. 
 
 Currently there is no signal to tell the boss to refeed its queue back upstream, though the Thread::Pool object
 can be accessed via $pool->{_queue}. Future revisions may include a callback for this ability.
@@ -405,13 +453,13 @@ If this doesn't suit your needs, see the following projects:
 
 Thread::Pool - very similar in goals to this project with a larger feature set.
 
-Gearman - client/server worker pool
+Gearman::Client - client/server worker pool
 
 TheSchwartz (or Helios) - DBI fed backend to pools of workers
 
-Beanstalk - client/server worker pool
+Beanstalk::Client and/or Beanstalk::Pool - another client/server worker pool
 
-Hopkins - "a better cronjob" with work queues
+Hopkins - "a better cronjob" with work queues, async driven backend
 
 
 =head1 AUTHOR
