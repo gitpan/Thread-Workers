@@ -14,7 +14,7 @@ use Thread::Semaphore;
 use Encode;
 
 our $VERSION;
-$VERSION = '0.04';
+$VERSION = '0.05';
 
 sub new {
     my $class = shift;
@@ -329,9 +329,8 @@ sub KILL {
 
 =head1 NAME
 
-Thread::Workers - Creates a "boss" which feeds a queue, which is serviced by a pool of threads called 
-"workers". This module aims to be lightweight with limited features. Its primary aim is to provide 
-simple Boss/Worker thread management while keeping dependencies low.
+Thread::Workers - Creates a boss which feeds a queue consumed by workers. This module aims to be lightweight with 
+limited features. Its primary aim is to provide simple Boss/Worker thread management while keeping dependencies low.
 
 This is currently in experimental and development state and will be solidified more over time, but it
 works as advertised now.
@@ -383,19 +382,16 @@ sub fetch_data {
     # do something like return [ %hash ]
     return $work;
 }
-
 sub work_data {
     my $work = shift;
     # process the work.
     # we can log a return by returning a value.
     return do_something_with($work);
 }
-
 sub work_log {
     my $log = shift; # this is an array of hashes. each array item is { workitem => $original_work_item, return => $return_from_worker };
     do_something_with_the_log($log);
 }
-
 my $workers = Thread::Workers->new(threadinterval => 5, bossinterval => 5, totalthreads => 15);
 $workers->set_boss_log_cb->(\&work_log);
 $workers->set_boss_fetch_cb->(\&fetch_data);
@@ -403,43 +399,67 @@ $workers->set_workers_work_cb->(\&work_data);
 $workers->start_boss();
 $workers->start_workers();
 
+
 # would probably do other things in your code to spin in loops.
 # In my own code, I'm doing system monitoring and injecting some jobs locally, handling logging of the boss/worker subs,
 # and other tasks.
 
+
 The boss thread will do the following actions when it receives work:
 
+
 For scalars or arrays, it will post it as a single item into the work queue. Your workers
-need to know how to deal with the data being presented.
+need to know how to deal with the data being presented. This is not the expected use case.
 
 For a hash, the boss expects the work to be presented with the keys being unique integers. The
 integers correspond to the order they are placed into the queue.
+
 { 
-    0 => 'step 0',
-    1 => 'step 1',
-    2 => cmd1 => 'some data
+
+    0 => 'step 0'
+    1 => { 'step all' => 'data' } # scalar, maybe you just want a simple scalar for a worker.
+    2 => { cmd1 => { something => 'data', blah => 'blah' }} # or some object or some array.
+
 }
 
 
-This will create 3 separate "work items" to be placed into the queue. If you need to feed your workers
-with a single block of data from a hash, you *must* assign it this way.
+This will create 3 separate "work items" to be placed into the queue. 
+
+If you need to feed your workers with a single block of data from a hash, you *must* assign it this way.
+
+
+job_returning_from_boss_fetch = 
+
 
 {
-    0 => { cmd1 => 'data', cmd2 => 'data' }
-}
+
+  0 => { 
+	cmd1 => { 
+		    something => 'data', somethingelse => 'data', jobid => '121'   # whatever your worker callback is expecting
+		}
+       } 
+
+}# or cmd1 => scalar or an array or object or something.
+
+
 
 If the client returns data, say for 'step 0' it returned a value, it will be given to the log queue
-as an array of hashes. Lets say the worker logged { timestamp => '201209030823', jobid => '121', return = 'success' }
+as an array of hashes. Lets say the worker logged { timestamp => '201209030823', jobid => 'cmd1', return = 'success' }
 
 The log queue will have 
+
+
 [ 
-    { job => 'step 0', return => {timestamp => '201209030823', jobid => '121', return = 'success' } },
+
+    { job => 'cmd1', return => {timestamp => '201209030823', jobid => '121', return = 'success' } } # value of return is from worker callback return
+
 ]
 
-Whether you set a log callback or not, the log is flushed at the end of every boss interval. 
+
+Whether you set a log callback or not, the log is flushed at the end of every boss interval. Use it or lose it.
 
 Currently there is no signal to tell the boss to refeed its queue back upstream, though the Thread::Pool object
-can be accessed via $pool->{_queue}. Future revisions may include a callback for this ability.
+can be accessed via $pool->{_queue}. Future revisions will include a callback for this ability.
 
 =head1 SEE ALSO
 

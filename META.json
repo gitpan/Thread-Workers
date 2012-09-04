@@ -1,5 +1,5 @@
 {
-   "abstract" : "Creates a \"boss\" which feeds a queue, which is serviced by a pool of threads called ",
+   "abstract" : "Creates a boss which feeds a queue consumed by workers. This module aims to be lightweight with ",
    "author" : [
       "Kal Aeolian <kalielaeolian@gmail.com>"
    ],
@@ -35,5 +35,5 @@
       }
    },
    "release_status" : "stable",
-   "version" : "0.04"
+   "version" : "0.05"
 }

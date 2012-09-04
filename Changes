@@ -1,4 +1,7 @@
 Revision history for Perl extension Thread::Workers.
+0.05  Tue Sep  4 08:30:00 2012
+		- POD updates and fixes
+
 0.04  Mon Sep  3 21:29:12 2012
 	- kal:	- separated out thread creation sub
 		- simplified worker creation/adding subs
