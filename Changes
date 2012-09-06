@@ -1,4 +1,21 @@
 Revision history for Perl extension Thread::Workers.
+0.06  Wed Sep  5 21:45:00 2012
+		- Removed semaphore to control worker count, seems pointless if every ++ on count I ->up() the semaphore.
+		- Removed Stop (!!!!) for boss and workers.
+		- Replaced stop_boss/worker with pause_boss and pause_worker. Threads don't die. They just go to sleep. 
+		- *New method* Thread::Workers::set_drain_cb(\&method_deals_with_drained_queue);
+		    - You may not want to lose your queue. You can set a sig INT/KILL hook.
+		    - Thread::Workers::drain() will stop the boss and workers if not stopped, and drain the queue, and feed 
+			the data to the callback you set with set_drain_cb.
+		    - drain() is the preferred way to kill all the threads, it does things in the right order to drain the log and queue.
+		- Fixed a bug where workers weren't reading in the right wakeup value, but it worked on accident. Now It Works for the right reason. ;)
+		- Removed _tid var, implicit in _thread key
+		- Fixed not locking _worker_cmd when stopping workers (same on boss_cmd)
+		- Added in locking to all *reads* of _worker_cmd also. Read someplace this was necessary on older perls.
+		- Even more POD fixes (I'll get POD to work right one day!)
+		- In a sleep state, workers change their interval to 1 sec. After waking, they go back to normal.
+		- Same for the boss on sleep state interval changes
+
 0.05  Tue Sep  4 08:30:00 2012
 		- POD updates and fixes
 
