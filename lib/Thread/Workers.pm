@@ -11,10 +11,8 @@ use threads::shared;
 use Thread::Queue;
 use Thread::Semaphore;
 
-use Encode;
-
 our $VERSION;
-$VERSION = '0.06';
+$VERSION = '0.07';
 
 sub new {
     my $class = shift;
@@ -22,7 +20,7 @@ sub new {
     
     $self->{params} = {@_} || {};
     if (!exists($self->{params}{threadcount})) {
-	$self->{params}{threadcount} = 2; # this is the minimum of 1 thread
+	$self->{params}{threadcount} = 5; # this is the minimum of 1 thread
     }
     if (!exists($self->{params}{threadinterval})) {
 	$self->{params}{threadinterval} = 5;
@@ -46,16 +44,12 @@ sub _threadcount {
 
 sub _initialize {
     my $self = shift;
-#    $self->{_boss_lock} = Thread::Semaphore->new(1);
     $self->{_boss_cmd} = 0;
     $self->{_boss_cmd_lock} = Thread::Semaphore->new(1);
-#    $self->{_worker_lock} = Thread::Semaphore->new($self->{params}{threadcount});
     $self->{_worker_log_lock} = Thread::Semaphore->new(1);
     $self->{_worker_log} = undef;
-#    share($self->{_boss_lock});
     share($self->{_boss_cmd});
     share($self->{_boss_cmd_lock});
-#    share($self->{_worker_lock});
     share(@{$self->{_worker_log}});
     share($self->{_worker_log_lock});
 
@@ -315,6 +309,7 @@ sub stop_finish_work {
     foreach my $thr (keys %{$self->{_worker}}) {
 	$self->{_worker}{$thr}->join();
     }
+    $self->drain();
     return 1;
 }
 
@@ -372,6 +367,15 @@ sub destroy {
 
 Thread::Workers - Creates a boss which feeds a queue consumed by workers.
 
+=head1 DESCRIPTION
+
+Thread::Workers utilizes threads, Thread::Sempahore, and  Thread::Queue to create a pool of 
+workers which are serviced with work by a boss thread. The boss thread could be fed data from 
+a socket listening on the master thread, or could have a routine to check a database
+for work.
+
+Use non-thread safe modules with care!! If your boss is the only one to access mongo, you're doing it right. ;)
+
 =head1 SYNOPSIS
 
 This module aims to be lightweight with limited features. Its primary aim is to provide simple Boss/Worker thread management while keeping dependencies low. 
@@ -386,22 +390,47 @@ then refeed your queue to the boss.
 This is currently in experimental and development state and will be solidified more over time, but it works as advertised. Its up to you to ensure your 
 callbacks are using thread safe modules, or you wrap your non-thread safe modules appropriately!
 
+=head2 EXAMPLE
+
   use 5.012; #or higher
   use Thread::Workers;
 
   my $pool = Thread::Workers->new();
+  
+  # Other options include:
+  # my $pool = Thread::Workers->new( threadcount => 5, threadinterval => 30, bossinterval => 30 );
+  # Thread interval = how often the children will check for work, default is 5 secs. Boss interval = how often the boss checks for work, default is 1 sec.
+  
+  # This should be a function ref that will get some work. It puts it in the queue for processing. See below for how to structure this.
   $pool->set_boss_fetch_cb(\&function_returns_work);
+  
+  # When a worker is completed it may have work to hand back to the boss, maybe a log or return code of success/fail. This optional function ref processes that return.
   $pool->set_boss_log_cb(\&function_processes_worker_returns);
+  
+  # When the program is shutdown you may have unfinished work on the queue. This optional call will deal with that queue.
   $pool->set_drain_cb(\&function_gets_unworked_queue_on_drain);
+  
+  # This is the heart of your worker. This function ref is spawned on each worker and does the actual work that the boss sticks into the queue.
+  # Note! This should be thread safe.
   $pool->set_worker_work_cb(\&function_does_work);
+  
+  # This will start the boss fetching work
   $pool->start_boss();
+  
+  # This will start the workers taking work from the queue
   $pool->start_workers();
+  
+  # This adds a single worker to the pool
   $pool->add_worker();
+  
+  # Pause the workers after their current job finishes
   $pool->pause_workers();
+  
+  # Start the workers 
   $pool->wake_workers();
   
   #internal control loops
-  # we have orders to increase the load! add 500 workers
+  # we have orders to increase the load! add 500 workers. its cleaner to add it as Thread::Workers->new(threadcount => 500);
   for (1..500) { 
     $pool->add_worker();
   }
@@ -416,17 +445,13 @@ callbacks are using thread safe modules, or you wrap your non-thread safe module
   
   # Or if you don't care
   $pool->destroy();	#kills and joins all workers and the boss. you should probably clean up the object now :)
-  # Or! 
+  
+  # Or if you do care 
   $pool->stop_finish_work(); #gracefully stop boss and finish work queue, then shut down workers.
 
-=head1 DESCRIPTION
 
-Thread::Workers utilizes threads, Thread::Sempahore, and  Thread::Queue to create a pool of 
-workers which are serviced with work by a boss thread. The boss thread could be fed data from 
-a socket listening on the master thread, or could have a routine to check a database
-for work.
+=head2 EXAMPLE CALLBACKS
 
-=head1 EXAMPLE
     use Thread::Workers;
     
     sub fetch_data {
@@ -463,61 +488,75 @@ for work.
     # In my own code, I'm doing system monitoring and injecting some jobs locally, handling logging of the boss/worker subs,
     # and other tasks.
 
+=head1 WORK DATA STRUCTURE
+
+The boss fetch work function must return data in a manner Boss::Workers knows how to deal with. This can be a hash/array/scalar;
+
+=head2 HASH
+
 The boss expects the work to be presented with the keys being unique integers. The
 integers correspond to the order they are placed into the queue.
 
     my %jobs = 
     { 
-	0 => { transid  => $objref } # you can pass a 'command' with an object
-	1 => { step_all => '123'   } # scalar, maybe you just want a simple scalar for a worker.
-	2 => { cmd1     => { 
+	0 => $scalar # pass a simple string as an object to work on
+	1 => { transid  => $objref } # you can pass a 'command' with an object
+	2 => { step_all => '123'   } # scalar, maybe you just want a simple scalar for a worker.
+	3 => { cmd1     => { 
 			    something => 'data', 
 			    jobid => 'blah', 
 			    location => 'your moms house'
 		    	   }	     #or whatever your callback expects
 	     }
     };
+    
 
 
-This will create 3 separate "work items" to be placed into the queue in the 0->1->2 order for execution.
+The above would create 4 separate "work items" to be placed into the queue in the 0->1->2 order for execution.
 
-If you need to feed your workers with a single block of data from a hash, you *must* assign it this way.
+=head2 ARRAY
+
+    my @job = 
+    [
+        $scalar,
+        { transid => $objref },
+        #etc
+    ];
 
 
-    my %job = 
-    {
-	0 => { 
-		cmd1 => { 
-			    something =>'data', 
-			    somethingelse => 'data', 
-			    jobid =>'121'   # whatever your worker callback is expecting
-			}
-    	    }
-    }
+A scalar is even acceptable, it will just place it 'as is' on the queue.
 
+It is expected that your worker callback knows how to handle the data in whatever fashion you are presenting it in on the queue.
+
+=head1 LOG QUEUE
 
 If the client returns data, say for 'step 0' it returned a value, it will be given to the log queue
-as an array of hashes. Lets say the worker logged { timestamp => '201209030823', jobid => 'cmd1', return = 'success' }
+as an array of hashes. Lets say the worker finishes with this:
+
+    return { timestamp => '201209030823', jobid => 'cmd1', return = 'success' };
 
 The log queue will have the following presentation to the boss log callback:
 
     my @log =
     [ 
 	{ 
-	    job => 'cmd1',#name of the job
-	    return => {   	#value of return is worker_cb return
+	    job => 'cmd1', #name of the job if any, otherwise an integer of some sort.
+	    return => {   	
 			timestamp => '201209030823', 
 			jobid => '121', 
 			return => 'success' 
-		      }   #i put interesting data to log about the work item processed here
+		      }   
 	},
     ]
 
 
 Whether you set a log callback or not, the log is flushed at the end of every boss interval. Use it or lose it.
 
-Currently there is no signal to tell the boss to refeed its queue back upstream, though the Thread::Pool object
-can be accessed via $pool->{_queue}. Future revisions will include a callback for this ability.
+If you wish to feed your data back upstream (for example, you are SIGINT'ing or stopping your program for some reason and you don't want to lose your queue):
+
+$obj->stop_finish_work();
+
+This will allow the workers to gracefully finish, return whatever they have, then drains the queue through the drain_cb that was set. 
 
 =head1 SEE ALSO
 
